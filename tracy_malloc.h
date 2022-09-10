@@ -10,6 +10,8 @@ void *calloc(size_t nmemb, size_t size);
 void *realloc(void *ptr, size_t size);
 // size_t malloc_usable_size(void *ptr);
 
+void printList();
+
 
 } // namespace trc
 
