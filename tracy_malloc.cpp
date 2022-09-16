@@ -1,6 +1,8 @@
 #include <cstdlib>
 #include <cmath>
-#include "tracy_malloc.h"
+#include <mutex>
+#include <functional>
+#include "tracy_allocator.h"
 
 #define ALLOW_POTENTIAL_MALLOC 1
 
@@ -19,22 +21,17 @@ void* heapStart()
     static unsigned char static_heap[heapSize()];
     return static_cast<void*>(static_heap);
 }
-struct BlockHeader
-{
-    bool is_free = false;
-    size_t block_size = 0;
-    BlockHeader* next = nullptr;
-    BlockHeader* prev = nullptr;
 
-    void* memAddr() { return reinterpret_cast<void*>((unsigned char*)this + sizeof(BlockHeader)); }
-    BlockHeader* nextAdj()
-    {
-        auto next_start_addr = (unsigned char*)this + block_size;
-        if(next_start_addr > (reinterpret_cast<unsigned char*>(heapStart()) + heapSize()))
-            return nullptr;
-        return reinterpret_cast<BlockHeader*>(next_start_addr);
-    }
-};
+
+BlockHeader* BlockHeader::nextAdj()
+{
+    auto next_start_addr = (uint8_t*)this + block_size;
+    if(next_start_addr < heapStart())
+        return nullptr;
+    if(next_start_addr >= (uint8_t*)heapStart() + heapSize())
+        return nullptr;
+    return reinterpret_cast<BlockHeader*>(next_start_addr);
+}
 
 #if ALLOW_POTENTIAL_MALLOC
 std::string to_string(const BlockHeader& block)
@@ -52,61 +49,96 @@ std::string to_string(const BlockHeader& block)
 }
 #endif
 
+// std::mutex& heapMutex()
+// {
+//     static std::mutex mtx;
+//     return mtx;
+// }
 
 
-class BlockLinkedList
+BlockLinkedList::BlockLinkedList(bool is_free):
+    is_free_(is_free),
+    dummy_head_{is_free, 0, nullptr, nullptr},
+    tail_(&dummy_head_)
 {
-public:
-    BlockLinkedList(bool is_free):
-        is_free_(is_free),
-        dummy_head_{is_free, 0, nullptr, nullptr},
-        tail_(&dummy_head_)
+    if(is_free_ && dummy_head_.next == nullptr)
     {
-        if(is_free_ && dummy_head_.next == nullptr)
-        {
-            auto free_block = reinterpret_cast<BlockHeader*>(heapStart());
-            free_block->block_size = heapSize();
-            push_back(free_block);
-        }
-        while(tail_->next) tail_ = tail_->next;
+        auto free_block = reinterpret_cast<BlockHeader*>(heapStart());
+        free_block->block_size = heapSize();
+        push_back(free_block);
     }
-    void erase(const BlockHeader& block)
-    {
-        if(block.prev) block.prev->next = block.next;
-        if(block.next) block.next->prev = block.prev;
-    }
-    void push_back(BlockHeader* block)
-    {
-        if(block == nullptr) return;
-        block->is_free = is_free_;
-        tail_->next = block;
-        block->prev = tail_;
-        tail_ = tail_->next;
-    }
-    BlockHeader* head() { return &dummy_head_; }
-    BlockHeader* tail() { return tail_; }
+    while(tail_->next) tail_ = tail_->next;
+}
 
-private:
-    bool is_free_;
-    BlockHeader dummy_head_;
-    BlockHeader* tail_;
-};
+void BlockLinkedList::erase(const BlockHeader& block)
+{
+    if(&dummy_head_ == &block) return;
+    block.prev->next = block.next;
+    if(block.next) block.next->prev = block.prev;
+    if(tail_ == &block) tail_ = block.prev;
+}
 
+void BlockLinkedList::push_back(BlockHeader* block)
+{
+    if(block == nullptr) return;
+    block->is_free = is_free_;
+    tail_->next = block;
+    block->prev = tail_;
+    tail_ = tail_->next;
+}
+
+void BlockLinkedList::traverse(std::function<void(const BlockHeader& header)> f) const
+{
+    auto p = dummy_head_.next;
+    while(p)
+    {
+        f(*p);
+        p = p->next;
+    }
+}
+
+size_t BlockLinkedList::totalBlockSize() const
+{
+    size_t result = 0;
+    traverse([&result](const BlockHeader& b){ result += b.block_size; });
+    return result;
+}
+
+
+Allocator& heapAllocator()
+{
+    static Allocator allocator(heapStart(), heapSize());
+    return allocator;
+}
+
+#if 0
 BlockLinkedList& allocatedLinkedList()
 {
     static BlockLinkedList list(false);
     return list;
 }
 
+bool isAllocatedListEmpty()
+{
+    return allocatedLinkedList().tail() == allocatedLinkedList().head();
+}
+
+
 BlockLinkedList& freeLinkedList()
 {
     static BlockLinkedList list(true);
     return list;
 }
+#endif
 
-BlockHeader* findFreeBlock(size_t size)
+bool Allocator::isCompletelyFree() const
 {
-    BlockHeader* p = freeLinkedList().head();
+    return allocated_list_.tail() == allocated_list_.head();
+}
+
+BlockHeader* Allocator::findFreeBlock(size_t size)
+{
+    BlockHeader* p = free_list_.head();
     while(p && p->block_size < size)
     {
         p = p->next;
@@ -115,16 +147,17 @@ BlockHeader* findFreeBlock(size_t size)
     return p;
 }
 
-BlockHeader* findPrevAdj(BlockHeader* target)
+
+BlockHeader* Allocator::findPrevAdj(BlockHeader* target)
 {
-    BlockHeader* p = freeLinkedList().head();
+    BlockHeader* p = free_list_.head();
     while (p)
     {
         if(p->nextAdj() == target) return p;
         p = p->next;
     }
 
-    p = allocatedLinkedList().head();
+    p = allocated_list_.head();
     while (p)
     {
         if(p->nextAdj() == target) return p;
@@ -141,46 +174,63 @@ size_t memorySizeNeeded(size_t malloc_size)
     return ret;
 }
 
-void mergeAdjacentFreeBlocks(BlockHeader* header)
+void Allocator::mergeAdjacentFreeBlocks(BlockHeader* header)
 {
+    // std::cout << "in : " << std::hex << header << std::endl;
     if(! header || !(header->is_free)) return;
     while(header->nextAdj() && header->nextAdj()->is_free)
     {
         auto store_next = header->nextAdj();
+        // std::cout << "block size: " << store_next->block_size << ", addr: " << std::hex << header << "," << store_next << std::endl;
         header->block_size += header->nextAdj()->block_size;
-        freeLinkedList().erase(*store_next);
+        free_list_.erase(*store_next);
     }
 }
 
-void *malloc(size_t size)
+void* Allocator::malloc(size_t size)
 {
+    std::lock_guard<std::mutex> guard(mtx_);
     size_t block_size_needed = memorySizeNeeded(size);
+
     BlockHeader* free_block = findFreeBlock(block_size_needed);
 
     if(free_block == nullptr) return nullptr;
 
     if(block_size_needed == free_block->block_size)
     {
-        freeLinkedList().erase(*free_block);
-        allocatedLinkedList().push_back(free_block);
+        free_list_.erase(*free_block);
+        allocated_list_.push_back(free_block);
     }else // block_size_needed < free_block->block_size
     {
         free_block->block_size -= block_size_needed;
         auto new_block = reinterpret_cast<BlockHeader*>( (unsigned char*)free_block + free_block->block_size);
         new_block->block_size = block_size_needed;
-        allocatedLinkedList().push_back(new_block);
+        allocated_list_.push_back(new_block);
     }
-    return allocatedLinkedList().tail()->memAddr();
+    // std::cout << "hex addr: 0x" << std::hex << allocated_list_.tail()->memAddr() << std::endl;
+    return allocated_list_.tail()->memAddr();
 }
 
+void *malloc(size_t size)
+{
+    return heapAllocator().malloc(size);
+}
+
+void Allocator::free(void *ptr)
+{
+    std::lock_guard<std::mutex> guard(mtx_);
+    if(nullptr == ptr) return;
+    BlockHeader* header = reinterpret_cast<BlockHeader*>((unsigned char*)(ptr) - sizeof(BlockHeader));
+
+    BlockHeader* prev_adj = findPrevAdj(header);
+    allocated_list_.erase(*header);
+    free_list_.push_back(header);
+    // std::cout << "out : " << std::hex << prev_adj << std::endl;
+    mergeAdjacentFreeBlocks(prev_adj);
+}
 void free(void *ptr)
 {
-    BlockHeader* header = reinterpret_cast<BlockHeader*>((unsigned char*)(ptr) - sizeof(BlockHeader));
-    auto prev_adj = findPrevAdj(header);
-    allocatedLinkedList().erase(*header);
-    freeLinkedList().push_back(header);
-    mergeAdjacentFreeBlocks(prev_adj);
-
+    return heapAllocator().free(ptr);
 }
 
 void *calloc(size_t nmemb, size_t size)
@@ -193,11 +243,52 @@ void *realloc(void *ptr, size_t size)
     return std::realloc(ptr, size);
 }
 
-void printList()
+uint32_t Allocator::heapCheck() const
+{
+    uint32_t result_mask = 0;
+    // size check
+    if(free_list_.totalBlockSize() + allocated_list_.totalBlockSize() != heapSize())
+    {
+        result_mask |= (1 << 0);
+#if ALLOW_POTENTIAL_MALLOC
+        std::cout << "size check failed! free: " << free_list_.totalBlockSize()
+        << ", allocated: " << allocated_list_.totalBlockSize()
+        << ", total: " << heapSize() << std::endl;
+#endif
+    }
+
+    // free flag check
+    {
+        bool is_all_free = true;
+        free_list_.traverse([&is_all_free](const BlockHeader& b){ is_all_free = (is_all_free && b.is_free);});
+
+        if(!is_all_free)
+        {
+#if ALLOW_POTENTIAL_MALLOC
+            std::cout << "free check failed" << std::endl;
+#endif
+            result_mask |= (1 << 1);
+        }
+
+        bool is_any_free = false;
+        allocated_list_.traverse([&is_any_free](const BlockHeader& b){ is_any_free = (is_any_free || b.is_free);});
+        if(is_any_free)
+        {
+#if ALLOW_POTENTIAL_MALLOC
+            std::cout << "allocated check failed" << std::endl;
+#endif
+            result_mask |= (1 << 2);
+        }
+
+    }
+    return result_mask;
+}
+
+void Allocator::printList() const
 {
 
 #if ALLOW_POTENTIAL_MALLOC
-    BlockHeader* header = freeLinkedList().head();
+    const BlockHeader* header = free_list_.head();
     std::cout << "===== free =====" << std::endl;
     while(header)
     {
@@ -205,7 +296,7 @@ void printList()
         header = header->next;
     }
     std::cout << "===== allocated =====" << std::endl;
-    header = allocatedLinkedList().head();
+    header = allocated_list_.head();
     while(header)
     {
         std::cout << to_string(*header) << std::endl;

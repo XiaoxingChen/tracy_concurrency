@@ -1,6 +1,12 @@
 #include <iostream>
 #include <vector>
+#include <future>
+#include <thread>
+#include <chrono>
+
+
 #include "tracy_malloc.h"
+#include "tracy_allocator.h"
 
 void test_malloc_std()
 {
@@ -24,24 +30,107 @@ void malloc_0() {
 
 void mallocTest01()
 {
+    size_t heap_size = 0x10000;
+    uint8_t heap[heap_size];
+    trc::Allocator allocator(heap, heap_size);
     std::vector<void*> pts;
-    pts.push_back(trc::malloc(10));
+    pts.push_back(allocator.malloc(10));
     // trc::printList();
-    pts.push_back(trc::malloc(12));
-    pts.push_back(trc::malloc(22));
-    pts.push_back(trc::malloc(42));
-    pts.push_back(trc::malloc(62));
-    pts.push_back(trc::malloc(2));
+    pts.push_back(allocator.malloc(12));
+    pts.push_back(allocator.malloc(22));
+    pts.push_back(allocator.malloc(42));
+    pts.push_back(allocator.malloc(62));
+    pts.push_back(allocator.malloc(2));
 
-    trc::printList();
+    // trc::printList();
 
     while(pts.size() > 0)
     {
-        trc::free(pts.back());
+        allocator.free(pts.back());
         pts.pop_back();
     }
-    std::cout << "===final===" << std::endl;
-    trc::printList();
+    // std::cout << "===final===" << std::endl;
+
+    if(!allocator.isCompletelyFree())
+    {
+        // trc::printList();
+        throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__));
+    }
+
+}
+
+void mallocTest02()
+{
+    size_t heap_size = 0x10000;
+    uint8_t heap[heap_size];
+    trc::Allocator allocator(heap, heap_size);
+
+    std::vector<void*> pts;
+    for(size_t i = 0; i < 5; i++)
+    {
+        pts.push_back(allocator.malloc( rand() % 4096 ));
+    }
+    while(pts.size() > 0)
+    {
+        allocator.free(pts.back());
+        pts.pop_back();
+    }
+    if(!allocator.isCompletelyFree())
+    {
+        throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__));
+    }
+    allocator.heapCheck();
+}
+
+void mallocTest03()
+{
+    size_t heap_size = 0x80000;
+    uint8_t heap[heap_size];
+    trc::Allocator allocator(heap, heap_size);
+
+    std::cout << "\n\n\nmallocTest03" << std::endl;
+    size_t allocate_num = 25;
+    std::vector<std::promise<void*>> ptr_promises(allocate_num);
+    std::vector<std::future<void*>> ptr_futures(allocate_num);
+
+    for(size_t i = 0; i < allocate_num; i++)
+    {
+        ptr_futures.at(i) = ptr_promises.at(i).get_future();
+        std::thread([&ptr_promises, &allocator, i]{
+            auto ptr = allocator.malloc(rand() % 4096);
+            // p.set_value_at_thread_exit(nullptr);
+            ptr_promises.at(i).set_value_at_thread_exit(ptr);
+            // std::cout << "i: " << i << std::endl;
+        }).detach();
+    }
+
+    // std::this_thread::sleep_for(std::chrono::seconds(2));
+    // std::cout << "fuck" << std::endl;
+
+    for(size_t i = 0; i < allocate_num; i++)
+    {
+        ptr_futures.at(i).wait();
+        // allocator.free(ptr_futures.at(i).get());
+    }
+
+    allocator.heapCheck();
+    // allocator.printList();
+
+    for(size_t i = 0; i < allocate_num; i++)
+    {
+        // ptr_futures.at(i).wait();
+        void* addr = ptr_futures.at(i).get();
+        allocator.free(addr);
+        // std::cout << std::hex << "release: " << addr << std::endl;
+    }
+
+    if(!allocator.isCompletelyFree())
+    {
+        allocator.heapCheck();
+        allocator.printList();
+        throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__));
+    }
+
 }
 
 int main(int argc, char const *argv[])
@@ -50,5 +139,7 @@ int main(int argc, char const *argv[])
     // test_malloc_std();
     // malloc_0();
     mallocTest01();
+    mallocTest02();
+    mallocTest03();
     return 0;
 }
