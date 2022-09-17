@@ -3,6 +3,7 @@
 #include <future>
 #include <thread>
 #include <chrono>
+#include <map>
 
 
 #include "tracy_malloc.h"
@@ -142,7 +143,7 @@ void mallocTest04()
     trc::Allocator allocator(heap, heap_size);
     auto func = [&allocator](){
         std::vector<void*> ptrs;
-        for(size_t i = 0; i < 200; i++)
+        for(size_t i = 0; i < 500; i++)
         {
             bool do_alloc = rand() % 2;
             if(ptrs.empty() < 5) do_alloc = true;
@@ -164,16 +165,33 @@ void mallocTest04()
         }
     };
 
+    auto t_start = std::chrono::system_clock::now();
     std::vector<std::thread> threads;
-    for(size_t i = 0;i < 20; i++) threads.push_back(std::thread(func));
+    for(size_t i = 0;i < 30; i++) threads.push_back(std::thread(func));
     for(auto & th: threads) th.join();
 
-    if(!allocator.isCompletelyFree())
+    auto t_end = std::chrono::system_clock::now();
+    std::cout << "t_cost(s): " << std::chrono::duration<double>(t_end - t_start).count() << std::endl;
+
+    if(allocator.heapCheck() != 0)
     {
-        allocator.heapCheck();
         allocator.printList();
         throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__));
     }
+}
+
+void setExitCallBack()
+{
+
+}
+
+void threadExitCallbackTest01()
+{
+    auto func = [](){ setExitCallBack(); };
+    std::vector<std::thread> threads;
+    for(size_t i = 0; i < 5; i++) threads.push_back(std::thread(func));
+    // std::cout << "thread num: " << threads.size() << std::endl;
+    for(auto & th: threads) th.join();
 }
 
 int main(int argc, char const *argv[])
@@ -185,5 +203,6 @@ int main(int argc, char const *argv[])
     mallocTest02();
     mallocTest03();
     mallocTest04();
+    threadExitCallbackTest01();
     return 0;
 }
