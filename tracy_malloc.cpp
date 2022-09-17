@@ -82,8 +82,9 @@ void BlockLinkedList::push_back(BlockHeader* block)
 {
     if(block == nullptr) return;
     block->is_free = is_free_;
-    tail_->next = block;
     block->prev = tail_;
+    block->next = nullptr;
+    tail_->next = block;
     tail_ = tail_->next;
 }
 

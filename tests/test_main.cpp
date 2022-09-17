@@ -88,8 +88,8 @@ void mallocTest03()
     uint8_t heap[heap_size];
     trc::Allocator allocator(heap, heap_size);
 
-    std::cout << "\n\n\nmallocTest03" << std::endl;
-    size_t allocate_num = 25;
+    std::cout << "\nmallocTest03()" << std::endl;
+    size_t allocate_num = 55;
     std::vector<std::promise<void*>> ptr_promises(allocate_num);
     std::vector<std::future<void*>> ptr_futures(allocate_num);
 
@@ -122,6 +122,7 @@ void mallocTest03()
         void* addr = ptr_futures.at(i).get();
         allocator.free(addr);
         // std::cout << std::hex << "release: " << addr << std::endl;
+        allocator.heapCheck();
     }
 
     if(!allocator.isCompletelyFree())
@@ -133,6 +134,48 @@ void mallocTest03()
 
 }
 
+void mallocTest04()
+{
+    std::cout << "\nmallocTest04()" << std::endl;
+    size_t heap_size = 0x80000;
+    uint8_t heap[heap_size];
+    trc::Allocator allocator(heap, heap_size);
+    auto func = [&allocator](){
+        std::vector<void*> ptrs;
+        for(size_t i = 0; i < 200; i++)
+        {
+            bool do_alloc = rand() % 2;
+            if(ptrs.empty() < 5) do_alloc = true;
+            if(do_alloc)
+            {
+                ptrs.push_back(allocator.malloc(rand() % 4096));
+            }else // do free
+            {
+                size_t idx = rand() % ptrs.size();
+                allocator.free( ptrs.at(idx) );
+                ptrs.at(idx) = ptrs.back();
+                ptrs.pop_back();
+            }
+        }
+        while (!ptrs.empty())
+        {
+            allocator.free(ptrs.back());
+            ptrs.pop_back();
+        }
+    };
+
+    std::vector<std::thread> threads;
+    for(size_t i = 0;i < 20; i++) threads.push_back(std::thread(func));
+    for(auto & th: threads) th.join();
+
+    if(!allocator.isCompletelyFree())
+    {
+        allocator.heapCheck();
+        allocator.printList();
+        throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__));
+    }
+}
+
 int main(int argc, char const *argv[])
 {
     std::cout << "start" << std::endl;
@@ -141,5 +184,6 @@ int main(int argc, char const *argv[])
     mallocTest01();
     mallocTest02();
     mallocTest03();
+    mallocTest04();
     return 0;
 }
