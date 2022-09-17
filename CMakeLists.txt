@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.2)
-project(tracy_malloc)
+project(tracy_concurrency)
 
 if(CMAKE_SYSTEM_NAME MATCHES "^Android")
     add_compile_options(-std=c++17)
@@ -13,7 +13,8 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "^Windows")
     endif(MSVC)
 endif()
 
-add_library(tracy_malloc STATIC tracy_malloc.cpp)
+include_directories(inc)
+add_library(tracy_malloc STATIC src/tracy_malloc.cpp)
 
 if(BUILD_TEST)
     add_subdirectory(tests)

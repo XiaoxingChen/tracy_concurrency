@@ -19,7 +19,7 @@ constexpr size_t heapSize() { return 0x100000; }
 void* heapStart()
 {
     static unsigned char static_heap[heapSize()];
-    return static_cast<void*>(static_heap);
+    return reinterpret_cast<void*>(static_heap);
 }
 
 
