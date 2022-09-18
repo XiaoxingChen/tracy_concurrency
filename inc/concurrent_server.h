@@ -14,15 +14,27 @@
 #include <queue>
 
 #include "socket_utils.h"
+#include "thread_safe_cout.h"
 
 namespace trc
 {
 
+
+namespace BeginEndProto
+{
+    static const char MSG_HEAD = '^';
+    static const char MSG_END = '$';
+} // namespace name
+
+
 class SequentialServer
 {
 public:
-    SequentialServer()
-    {}
+    SequentialServer(int port_num=9090, std::string ip_addr=std::string("127.0.0.1"))
+        :port_num_(port_num), ip_addr_(ip_addr)
+    {
+
+    }
 
     ~ SequentialServer()
     {}
@@ -31,7 +43,7 @@ public:
         eExit = 0,
         eWaitForClient = 1,
         eWaitForMessage = 2,
-        eInMessage = 3
+        // eInMessage = 3
     };
 
     void run()
@@ -40,16 +52,16 @@ public:
         {
             if(state_ == eWaitForClient) runWaitForClient();
             else if(state_ == eWaitForMessage) runWaitForMessage();
-            else if(state_ == eInMessage) runInMessage();
             else break;
         }
     }
 
-    void exit()
+    void shutdown()
     {
         if(state_ != eExit)
         {
-            close(sock_fd_);
+            ::shutdown(sock_fd_, SHUT_RDWR);
+            ::shutdown(listen_sock_fd_, SHUT_RDWR);
         }
     }
 
@@ -62,6 +74,7 @@ private:
             if(listen_sock_fd_ < 0)
             {
                 state_ = eExit;
+                ThreadSafeCout() << "listen socket create failed " << std::endl;
                 return;
             }
         }
@@ -69,8 +82,8 @@ private:
         sockaddr_in peer_addr;
         socklen_t peer_addr_len = sizeof(peer_addr);
         sock_fd_ = accept(listen_sock_fd_, (struct sockaddr*)&peer_addr, &peer_addr_len);
-        std::cout << "client connected: " << std::hex
-            << peer_addr.sin_addr.s_addr << std::dec << ", " << peer_addr.sin_port << std::endl;
+        ThreadSafeCout() << "client connected: " << std::hex
+            << peer_addr.sin_addr.s_addr << std::dec << ": " << peer_addr.sin_port << std::endl;
         state_ = eWaitForMessage;
     }
 
@@ -81,13 +94,13 @@ private:
         int len = recv(sock_fd_, local_buffer.data(), local_buffer.size(), 0);
         if (len == 0)
         {
-            std::cout << "client shut down" << std::endl;
+            ThreadSafeCout() << "client disconnected" << std::endl;
             close(sock_fd_);
             state_ = eWaitForClient;
             return;
         }
         if (len < 0) {
-            std::cout << "Receive error: " << strerror(errno) << std::endl;
+            ThreadSafeCout() << "Receive error: " << strerror(errno) << std::endl;
             close(sock_fd_);
             state_ = eExit;
             return ;
@@ -95,34 +108,36 @@ private:
         // std::cout << "get message" << std::endl;
         for(size_t i = 0; i < len; i++) que_.push(local_buffer.at(i));
 
+        // state_ = eInMessage;
+        runInMessage();
+
+    }
+
+    void runInMessage()
+    {
+        // ThreadSafeCout() << "runInMessage()" << std::endl;
+
         while(!que_.empty())
         {
             char c = que_.front();
             que_.pop();
-            if(c == MSG_HEAD)
+            if(c == BeginEndProto::MSG_HEAD)
             {
                 process_buffer_.clear();
-            }else if(c == MSG_END)
+            }else if(c == BeginEndProto::MSG_END)
             {
-                state_ = eInMessage;
-                break;
+                for(auto & c : process_buffer_) c += 1;
+                int ret = send(sock_fd_, process_buffer_.data(), process_buffer_.size(), 0);
+                if(ret < 1)
+                {
+                    ThreadSafeCout() << "send error" << std::endl;
+                }
             }else
             {
                 process_buffer_.push_back(c);
             }
         }
 
-
-    }
-
-    void runInMessage()
-    {
-        for(auto & c : process_buffer_) c += 1;
-        int ret = send(sock_fd_, process_buffer_.data(), process_buffer_.size(), 0);
-        if(ret < 1)
-        {
-            std::cout << "send error" << std::endl;
-        }
         state_ = eWaitForMessage;
     }
 
@@ -131,12 +146,101 @@ private:
     std::vector<char> process_buffer_;
     ServerState state_ = eWaitForClient;
     std::string ip_addr_ = "127.0.0.1";
-    int port_num_ = 9091;
+    int port_num_ = 9090;
     int listen_sock_fd_ = -1;
     int sock_fd_ = -1;
-    static const char MSG_HEAD = '^';
-    static const char MSG_END = '$';
 
+};
+
+class NaiveClient
+{
+public:
+    NaiveClient(int server_port,
+        std::string server_ip=std::string("127.0.0.1"),
+        std::string client_ip=std::string("127.0.0.1"))
+        :server_port_(server_port), server_ip_addr_(server_ip), client_ip_addr_(client_ip)
+    {
+
+    }
+
+    ~NaiveClient()
+    {
+        close(sock_fd_);
+    }
+
+    void initConnection()
+    {
+        struct sockaddr_in addr = {0};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(server_port_); /*converts short to
+                                            short with network byte order*/
+
+        addr.sin_addr.s_addr = inet_addr(server_ip_addr_.c_str());
+
+        sock_fd_ = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (sock_fd_ == -1) {
+            perror("Socket creation error");
+            return ;
+        }
+
+        if (connect(sock_fd_, (struct sockaddr*) &addr, sizeof(addr)) == -1)
+        {
+            perror("Connection error");
+            close(sock_fd_);
+        }
+        ThreadSafeCout() << "client init with port: " << addr.sin_port << std::endl;
+    }
+
+    void handleReceiver(bool block=false)
+    {
+        std::vector<char> local_buffer(1024);
+        int flags = 0;
+        if(!block) flags |= MSG_DONTWAIT;
+        int len = recv(sock_fd_, local_buffer.data(), local_buffer.size(), flags);
+        if(len < 0)
+        {
+            if(block)
+            {
+                ThreadSafeCout() << "Receive error: " << strerror(errno) << std::endl;
+                close(sock_fd_);
+            }
+            return ;
+        }
+        for(size_t i = 0; i < len; i++)
+            result_buffer_.push_back(local_buffer.at(i));
+    }
+
+    void send( const std::vector<std::string>& messages )
+    {
+        std::call_once(init_flag_, [this](){this->initConnection();});
+        if(sock_fd_ < 0) return;
+
+        for(const auto & msg: messages)
+        {
+            std::string packed_msg("^");
+            packed_msg += (msg + "$");
+
+            int ret = ::send(sock_fd_, packed_msg.c_str(), packed_msg.size(), 0);
+            if(ret < 1)
+            {
+                ThreadSafeCout() << "send error" << std::endl;
+            }
+        }
+        handleReceiver();
+    }
+
+    const std::vector<char>& resultBuffer() const
+    {
+        return result_buffer_;
+    }
+
+private:
+    std::string server_ip_addr_ = "127.0.0.1";
+    std::string client_ip_addr_ = "127.0.0.1";
+    std::vector<char> result_buffer_;
+    int server_port_;
+    int sock_fd_ = -1;
+    std::once_flag init_flag_;
 };
 
 

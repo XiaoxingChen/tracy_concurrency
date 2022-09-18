@@ -38,6 +38,7 @@ inline int listen_inet_socket(const std::string& ip_addr, int port_num)
     return sock;
 }
 
+
 } // namespace trc
 
 #endif // _SOCKET_UTILS_H_
