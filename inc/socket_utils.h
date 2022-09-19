@@ -38,6 +38,18 @@ inline int listen_inet_socket(const std::string& ip_addr, int port_num)
     return sock;
 }
 
+std::string ipAddrToString(uint32_t ip_addr)
+{
+    std::string ret;
+    ret += std::to_string(ip_addr & 0xff);
+    ret += ".";
+    ret += std::to_string((ip_addr >> 8) & 0xff);
+    ret += ".";
+    ret += std::to_string((ip_addr >> 16) & 0xff);
+    ret += ".";
+    ret += std::to_string((ip_addr >> 24) & 0xff);
+    return ret;
+}
 
 } // namespace trc
 

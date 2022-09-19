@@ -31,7 +31,7 @@ class SequentialServer
 {
 public:
     SequentialServer(int port_num=9090, std::string ip_addr=std::string("127.0.0.1"))
-        :port_num_(port_num), ip_addr_(ip_addr)
+        :enable_flag_(true), port_num_(port_num), ip_addr_(ip_addr)
     {
 
     }
@@ -40,7 +40,7 @@ public:
     {}
 
     enum ServerState{
-        eExit = 0,
+        // eExit = 0,
         eWaitForClient = 1,
         eWaitForMessage = 2,
         // eInMessage = 3
@@ -48,21 +48,22 @@ public:
 
     void run()
     {
-        while(1)
+        while(enable_flag_.load())
         {
             if(state_ == eWaitForClient) runWaitForClient();
             else if(state_ == eWaitForMessage) runWaitForMessage();
-            else break;
         }
+        close(sock_fd_);
+        close(listen_sock_fd_);
     }
 
     void shutdown()
     {
-        if(state_ != eExit)
-        {
-            ::shutdown(sock_fd_, SHUT_RDWR);
-            ::shutdown(listen_sock_fd_, SHUT_RDWR);
-        }
+        enable_flag_.store(false);
+        ::shutdown(sock_fd_, SHUT_RDWR);
+        close(sock_fd_);
+        ::shutdown(listen_sock_fd_, SHUT_RDWR);
+        close(listen_sock_fd_);
     }
 
 private:
@@ -73,17 +74,23 @@ private:
             listen_sock_fd_ = listen_inet_socket(ip_addr_, port_num_);
             if(listen_sock_fd_ < 0)
             {
-                state_ = eExit;
+                enable_flag_.store(false);
                 ThreadSafeCout() << "listen socket create failed " << std::endl;
                 return;
             }
+            ThreadSafeCout() << "listen socket create success" << std::endl;
         }
-
         sockaddr_in peer_addr;
         socklen_t peer_addr_len = sizeof(peer_addr);
         sock_fd_ = accept(listen_sock_fd_, (struct sockaddr*)&peer_addr, &peer_addr_len);
-        ThreadSafeCout() << "client connected: " << std::hex
-            << peer_addr.sin_addr.s_addr << std::dec << ": " << peer_addr.sin_port << std::endl;
+        if(sock_fd_ < 0)
+        {
+            perror("Accept error");
+            return;
+        }
+        ThreadSafeCout() << "client connected: "
+            << ipAddrToString(peer_addr.sin_addr.s_addr)  << ":" << peer_addr.sin_port
+            << std::endl;
         state_ = eWaitForMessage;
     }
 
@@ -101,8 +108,7 @@ private:
         }
         if (len < 0) {
             ThreadSafeCout() << "Receive error: " << strerror(errno) << std::endl;
-            close(sock_fd_);
-            state_ = eExit;
+            enable_flag_.store(false);
             return ;
         }
         // std::cout << "get message" << std::endl;
@@ -142,9 +148,11 @@ private:
     }
 
 private:
+    std::atomic<bool> enable_flag_;
     std::queue<char> que_;
     std::vector<char> process_buffer_;
     ServerState state_ = eWaitForClient;
+    std::mutex state_mtx_;
     std::string ip_addr_ = "127.0.0.1";
     int port_num_ = 9090;
     int listen_sock_fd_ = -1;
@@ -187,8 +195,15 @@ public:
         {
             perror("Connection error");
             close(sock_fd_);
+            sock_fd_ = -1;
         }
         ThreadSafeCout() << "client init with port: " << addr.sin_port << std::endl;
+    }
+
+    void shutdown()
+    {
+        ::shutdown(sock_fd_, SHUT_RDWR);
+        close(sock_fd_);
     }
 
     void handleReceiver(bool block=false)
@@ -212,8 +227,11 @@ public:
 
     void send( const std::vector<std::string>& messages )
     {
-        std::call_once(init_flag_, [this](){this->initConnection();});
-        if(sock_fd_ < 0) return;
+        // std::call_once(init_flag_, [this](){this->initConnection();});
+        for(size_t i = 0; i < 5 && sock_fd_ < 0; i++, std::this_thread::sleep_for(std::chrono::milliseconds(1)))
+        {
+            initConnection();
+        }
 
         for(const auto & msg: messages)
         {
@@ -240,7 +258,7 @@ private:
     std::vector<char> result_buffer_;
     int server_port_;
     int sock_fd_ = -1;
-    std::once_flag init_flag_;
+    // std::once_flag init_flag_;
 };
 
 

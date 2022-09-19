@@ -5,17 +5,34 @@
 
 #include "concurrent_server.h"
 
-inline void concurrentServerTest01()
+inline void concurrentServerManualTest01()
 {
-    trc::ThreadSafeCout() << "concurrentServerTest01()" << std::endl;
+    trc::ThreadSafeCout() << "concurrentServerManualTest01()" << std::endl;
     int server_port_number = 9095;
     // std::atomic<bool> exit_server(false);
     trc::SequentialServer server(server_port_number);
     std::thread server_thread([&server](){
         server.run();
+        trc::ThreadSafeCout() << "server thread exit" << std::endl;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    trc::ThreadSafeCout() << "shutdown server" << std::endl;
+    server.shutdown();
+    server_thread.join();
+}
+
+inline void concurrentServerTest01()
+{
+    trc::ThreadSafeCout() << "concurrentServerTest01()" << std::endl;
+    int server_port_number = 9095;
+
+    trc::SequentialServer server(server_port_number);
+    std::thread server_thread([&server](){
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        server.run();
         trc::ThreadSafeCout() << "server exit" << std::endl;
     });
-    // std::vector<std::string> messages{"11", "22", "33", "44"};
+
     std::vector<std::string> messages{"11", "22", "33", "44"};
     std::promise<std::vector<char>> prom_buff;
     std::future<std::vector<char>> futu_buff = prom_buff.get_future();
@@ -25,6 +42,7 @@ inline void concurrentServerTest01()
         client.send(messages);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         client.handleReceiver(true);
+        client.shutdown();
 
         prom_buff.set_value_at_thread_exit(client.resultBuffer());
         trc::ThreadSafeCout() << "client thread exit" << std::endl;
@@ -52,6 +70,7 @@ inline void concurrentServerTest01()
 inline void concurrentServerFullTests()
 {
     concurrentServerTest01();
+    // concurrentServerManualTest01();
 }
 
 #endif // _TEST_CONCURRENT_SERVER_H_
