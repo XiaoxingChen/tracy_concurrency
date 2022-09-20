@@ -3,7 +3,7 @@
 
 #include <thread>
 
-// #include "concurrent_server.h"
+#include "concurrent_server.h"
 #include "sequential_server.h"
 #include "naive_client.h"
 
@@ -93,9 +93,24 @@ inline void concurrentServerTest01()
 
 }
 
+inline void concurrentServerTest02()
+{
+    trc::ThreadSafeCout() << "concurrentServerTest02()" << std::endl;
+    trc::ConcurrentServer server;
+    server.init();
+    std::thread server_thread([&server](){
+        server.run();
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    server.shutdown();
+    server_thread.join();
+}
+
 inline void concurrentServerFullTests()
 {
     concurrentServerTest01();
+    concurrentServerTest02();
     // sequentialServerManualTest01();
     // naiveClientManualTest01();
 }

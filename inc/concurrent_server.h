@@ -6,6 +6,9 @@
 #include <sys/types.h>
 #include <errno.h>
 #include <string.h>
+#include <condition_variable>
+#include <atomic>
+#include <thread>
 
 
 #include <unistd.h>
@@ -15,55 +18,52 @@
 
 #include "socket_utils.h"
 #include "thread_safe_cout.h"
+#include "begin_end_proto.h"
 
 namespace trc
 {
 
-
-namespace BeginEndProto
-{
-    static const char MSG_HEAD = '^';
-    static const char MSG_END = '$';
-} // namespace name
-
-
-class SequentialServer
+class ConcurrentServer
 {
 public:
-    SequentialServer(int port_num=9090, std::string ip_addr=std::string("127.0.0.1"))
+    ConcurrentServer(int port_num=9090, std::string ip_addr=std::string("127.0.0.1"))
         :enable_flag_(true), port_num_(port_num), ip_addr_(ip_addr)
     {
 
     }
 
-    ~ SequentialServer()
+    ~ ConcurrentServer()
     {}
-
-    enum ServerState{
-        // eExit = 0,
-        eWaitForClient = 1,
-        eWaitForMessage = 2,
-        // eInMessage = 3
-    };
 
     void run()
     {
-        while(enable_flag_.load())
+        std::mutex create_thread_mtx;
+        // std::condition_variable create_thread_cv;
+        std::atomic<size_t> client_num(0);
+        std::unique_lock<std::mutex> lock(create_thread_mtx);
+
+        while (enable_flag_.load())
         {
-            if(state_ == eWaitForClient) runWaitForClient();
-            else if(state_ == eWaitForMessage) runWaitForMessage();
+            spin_thread_cv_.wait(lock, [&](){ return client_num < MAX_CLIENT_NUM || !enable_flag_.load();});
+            while(client_num < MAX_CLIENT_NUM)
+            {
+                std::thread th([&](){
+                    ConcurrentServer::perClientThread(
+                        listen_sock_fd_,
+                        client_num,
+                        spin_thread_cv_);
+                });
+                th.detach();
+            }
         }
-        close(sock_fd_);
-        close(listen_sock_fd_);
     }
 
     void shutdown()
     {
         enable_flag_.store(false);
-        ::shutdown(sock_fd_, SHUT_RDWR);
-        close(sock_fd_);
         ::shutdown(listen_sock_fd_, SHUT_RDWR);
         close(listen_sock_fd_);
+        spin_thread_cv_.notify_one();
     }
 
     void init()
@@ -79,193 +79,89 @@ public:
     }
 
 private:
-    void runWaitForClient()
+
+    static void perClientThread(
+        int listen_sock_fd,
+        std::atomic<size_t>& client_num,
+        std::condition_variable& cv )
     {
-        if(listen_sock_fd_ == -1)
-        {
-            init();
-        }
+        client_num++;
         sockaddr_in peer_addr;
         socklen_t peer_addr_len = sizeof(peer_addr);
-        sock_fd_ = accept(listen_sock_fd_, (struct sockaddr*)&peer_addr, &peer_addr_len);
-        if(sock_fd_ < 0)
+        int sock_fd = accept(listen_sock_fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
+        if(sock_fd < 0)
         {
             perror("Accept error");
+            client_num--;
             return;
         }
         ThreadSafeCout() << "client connected: "
             << ipAddrToString(peer_addr.sin_addr.s_addr)  << ":" << peer_addr.sin_port
             << std::endl;
-        state_ = eWaitForMessage;
-    }
 
-    void runWaitForMessage()
-    {
         std::vector<char> local_buffer(1024);
-        // int errno;
-        int len = recv(sock_fd_, local_buffer.data(), local_buffer.size(), 0);
-        if (len == 0)
+        std::vector<char> process_buffer;
+        std::queue<char> que;
+        while(1)
         {
-            ThreadSafeCout() << "client disconnected" << std::endl;
-            close(sock_fd_);
-            state_ = eWaitForClient;
-            return;
-        }
-        if (len < 0) {
-            ThreadSafeCout() << "Receive error: " << strerror(errno) << std::endl;
-            enable_flag_.store(false);
-            return ;
-        }
-        // std::cout << "get message" << std::endl;
-        for(size_t i = 0; i < len; i++) que_.push(local_buffer.at(i));
-
-        // state_ = eInMessage;
-        runInMessage();
-
-    }
-
-    void runInMessage()
-    {
-        // ThreadSafeCout() << "runInMessage()" << std::endl;
-
-        while(!que_.empty())
-        {
-            char c = que_.front();
-            que_.pop();
-            if(c == BeginEndProto::MSG_HEAD)
+            int len = recv(sock_fd, local_buffer.data(), local_buffer.size(), 0);
+            if (len == 0)
             {
-                process_buffer_.clear();
-            }else if(c == BeginEndProto::MSG_END)
-            {
-                for(auto & c : process_buffer_) c += 1;
-                int ret = send(sock_fd_, process_buffer_.data(), process_buffer_.size(), 0);
-                if(ret < 1)
-                {
-                    ThreadSafeCout() << "send error" << std::endl;
-                }
-            }else
-            {
-                process_buffer_.push_back(c);
+                ThreadSafeCout() << "client disconnected" << std::endl;
+                break;
             }
-        }
+            if (len < 0)
+            {
+                ThreadSafeCout() << "Receive error: " << strerror(errno) << std::endl;
+                break ;
+            }
+            for(size_t i = 0; i < len; i++) que.push(local_buffer.at(i));
 
-        state_ = eWaitForMessage;
+            while(!que.empty())
+            {
+                char c = que.front();
+                que.pop();
+                if(c == BeginEndProto::MSG_HEAD)
+                {
+                    process_buffer.clear();
+                }else if(c == BeginEndProto::MSG_END)
+                {
+                    for(auto & c : process_buffer) c += 1;
+                    int ret = send(sock_fd, process_buffer.data(), process_buffer.size(), 0);
+                    if(ret < 1)
+                    {
+                        ThreadSafeCout() << "send error" << std::endl;
+                    }
+                }else
+                {
+                    process_buffer.push_back(c);
+                }
+            }
+
+        }
+        close(sock_fd);
+        client_num--;
+        cv.notify_one();
     }
 
 private:
+    static const size_t MAX_CLIENT_NUM = 5;
     std::atomic<bool> enable_flag_;
     std::queue<char> que_;
     std::vector<char> process_buffer_;
-    ServerState state_ = eWaitForClient;
+
     std::mutex state_mtx_;
     std::string ip_addr_ = "127.0.0.1";
     int port_num_ = 9090;
     int listen_sock_fd_ = -1;
-    int sock_fd_ = -1;
+    std::vector<int> sock_fds_;
+    std::condition_variable spin_thread_cv_;
+
+    // size_t client_num_ = 0;
+
 
 };
 
-class NaiveClient
-{
-public:
-    NaiveClient(int server_port,
-        std::string server_ip=std::string("127.0.0.1"),
-        std::string client_ip=std::string("127.0.0.1"))
-        :server_port_(server_port), server_ip_addr_(server_ip), client_ip_addr_(client_ip)
-    {
-
-    }
-
-    ~NaiveClient()
-    {
-        close(sock_fd_);
-    }
-
-    void initConnection()
-    {
-        struct sockaddr_in addr = {0};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(server_port_); /*converts short to
-                                            short with network byte order*/
-
-        addr.sin_addr.s_addr = inet_addr(server_ip_addr_.c_str());
-
-        sock_fd_ = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (sock_fd_ == -1) {
-            perror("Socket creation error");
-            return ;
-        }
-
-        if (connect(sock_fd_, (struct sockaddr*) &addr, sizeof(addr)) == -1)
-        {
-            perror("Connection error");
-            close(sock_fd_);
-            sock_fd_ = -1;
-        }
-        ThreadSafeCout() << "client init with port: " << addr.sin_port << std::endl;
-    }
-
-    void shutdown()
-    {
-        ::shutdown(sock_fd_, SHUT_RDWR);
-        close(sock_fd_);
-    }
-
-    void handleReceiver(bool block=false)
-    {
-        std::vector<char> local_buffer(1024);
-        int flags = 0;
-        if(!block) flags |= MSG_DONTWAIT;
-        int len = recv(sock_fd_, local_buffer.data(), local_buffer.size(), flags);
-        if(len < 0)
-        {
-            if(block)
-            {
-                ThreadSafeCout() << "Receive error: " << strerror(errno) << std::endl;
-                close(sock_fd_);
-            }
-            return ;
-        }
-        for(size_t i = 0; i < len; i++)
-            result_buffer_.push_back(local_buffer.at(i));
-    }
-
-    void send( const std::vector<std::string>& messages )
-    {
-        // std::call_once(init_flag_, [this](){this->initConnection();});
-        if(sock_fd_ < 0) initConnection();
-        // for(size_t i = 0; i < 5 && sock_fd_ < 0; i++, std::this_thread::sleep_for(std::chrono::milliseconds(1)))
-        // {
-        //     initConnection();
-        // }
-
-        for(const auto & msg: messages)
-        {
-            std::string packed_msg("^");
-            packed_msg += (msg + "$");
-
-            int ret = ::send(sock_fd_, packed_msg.c_str(), packed_msg.size(), 0);
-            if(ret < 1)
-            {
-                ThreadSafeCout() << "send error" << std::endl;
-            }
-        }
-        handleReceiver();
-    }
-
-    const std::vector<char>& resultBuffer() const
-    {
-        return result_buffer_;
-    }
-
-private:
-    std::string server_ip_addr_ = "127.0.0.1";
-    std::string client_ip_addr_ = "127.0.0.1";
-    std::vector<char> result_buffer_;
-    int server_port_;
-    int sock_fd_ = -1;
-    // std::once_flag init_flag_;
-};
 
 
 
