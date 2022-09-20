@@ -3,7 +3,9 @@
 
 #include <thread>
 
-#include "concurrent_server.h"
+// #include "concurrent_server.h"
+#include "sequential_server.h"
+#include "naive_client.h"
 
 inline void naiveClientManualTest01()
 {
