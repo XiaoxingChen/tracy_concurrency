@@ -66,19 +66,24 @@ public:
         close(listen_sock_fd_);
     }
 
+    void init()
+    {
+        listen_sock_fd_ = listen_inet_socket(ip_addr_, port_num_);
+        if(listen_sock_fd_ < 0)
+        {
+            enable_flag_.store(false);
+            ThreadSafeCout() << "listen socket create failed " << std::endl;
+            return;
+        }
+        ThreadSafeCout() << "listen socket create success" << std::endl;
+    }
+
 private:
     void runWaitForClient()
     {
         if(listen_sock_fd_ == -1)
         {
-            listen_sock_fd_ = listen_inet_socket(ip_addr_, port_num_);
-            if(listen_sock_fd_ < 0)
-            {
-                enable_flag_.store(false);
-                ThreadSafeCout() << "listen socket create failed " << std::endl;
-                return;
-            }
-            ThreadSafeCout() << "listen socket create success" << std::endl;
+            init();
         }
         sockaddr_in peer_addr;
         socklen_t peer_addr_len = sizeof(peer_addr);
@@ -228,10 +233,11 @@ public:
     void send( const std::vector<std::string>& messages )
     {
         // std::call_once(init_flag_, [this](){this->initConnection();});
-        for(size_t i = 0; i < 5 && sock_fd_ < 0; i++, std::this_thread::sleep_for(std::chrono::milliseconds(1)))
-        {
-            initConnection();
-        }
+        if(sock_fd_ < 0) initConnection();
+        // for(size_t i = 0; i < 5 && sock_fd_ < 0; i++, std::this_thread::sleep_for(std::chrono::milliseconds(1)))
+        // {
+        //     initConnection();
+        // }
 
         for(const auto & msg: messages)
         {
