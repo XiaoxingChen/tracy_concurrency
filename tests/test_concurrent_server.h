@@ -85,6 +85,10 @@ inline void concurrentServerTest01()
 
     if(result != expected_result)
     {
+        if(result.empty())
+        {
+            trc::ThreadSafeCout() << "buffer empty!" << std::endl;
+        }
         for(auto & c : result)
             trc::ThreadSafeCout() << c;
         throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__));
@@ -96,20 +100,53 @@ inline void concurrentServerTest01()
 inline void concurrentServerTest02()
 {
     trc::ThreadSafeCout() << "concurrentServerTest02()" << std::endl;
-    trc::ConcurrentServer server;
+
+    int server_port_number = 9096;
+    trc::ConcurrentServer server(server_port_number);
     server.init();
     std::thread server_thread([&server](){
         server.run();
     });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+#if 1
+
+    std::vector<std::string> messages{"11", "22", "33", "44"};
+    std::vector<std::thread> threads;
+    for(size_t i = 0; i < 4; i++)
+    {
+
+        // std::promise<std::vector<char>> prom_buff;
+        // std::future<std::vector<char>> futu_buff = prom_buff.get_future();
+
+        std::thread client_thread([ server_port_number, messages](){
+            trc::NaiveClient client(server_port_number);
+            client.send(messages);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            client.handleReceiver(true);
+            client.shutdown();
+
+            // prom_buff.set_value_at_thread_exit(client.resultBuffer());
+            trc::ThreadSafeCout() << "client thread exit" << std::endl;
+        });
+
+        threads.push_back(std::move(client_thread));
+    }
+    for(auto & th: threads)
+    {
+        th.join();
+    }
+
+#endif
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
     server.shutdown();
+    trc::ThreadSafeCout() << "shutdown server" << std::endl;
     server_thread.join();
 }
 
 inline void concurrentServerFullTests()
 {
-    concurrentServerTest01();
+    // concurrentServerTest01();
     concurrentServerTest02();
     // sequentialServerManualTest01();
     // naiveClientManualTest01();

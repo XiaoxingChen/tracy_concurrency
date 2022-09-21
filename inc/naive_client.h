@@ -41,7 +41,7 @@ public:
         addr.sin_family = AF_INET;
         addr.sin_port = htons(server_port_); /*converts short to
                                             short with network byte order*/
-
+        // ThreadSafeCout() << "raw port: " << addr.sin_port << std::endl;
         addr.sin_addr.s_addr = inet_addr(server_ip_addr_.c_str());
 
         sock_fd_ = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -56,7 +56,7 @@ public:
             close(sock_fd_);
             sock_fd_ = -1;
         }
-        ThreadSafeCout() << "client init with port: " << addr.sin_port << std::endl;
+        // ThreadSafeCout() << "client init with port: " << addr.sin_port << std::endl;
     }
 
     void shutdown()

@@ -38,23 +38,29 @@ public:
     void run()
     {
         std::mutex create_thread_mtx;
+        // create_thread_mtx.lock();
         // std::condition_variable create_thread_cv;
         std::atomic<size_t> client_num(0);
-        std::unique_lock<std::mutex> lock(create_thread_mtx);
+
+        // lock.lock();
 
         while (enable_flag_.load())
         {
-            spin_thread_cv_.wait(lock, [&](){ return client_num < MAX_CLIENT_NUM || !enable_flag_.load();});
-            while(client_num < MAX_CLIENT_NUM)
+            // std::unique_lock<std::mutex> lock(create_thread_mtx);
+            create_thread_mtx.lock();
+            if(client_num < MAX_CLIENT_NUM)
             {
+                client_num++;
                 std::thread th([&](){
                     ConcurrentServer::perClientThread(
                         listen_sock_fd_,
                         client_num,
-                        spin_thread_cv_);
+                        create_thread_mtx);
                 });
                 th.detach();
             }
+
+            // spin_thread_cv_.wait(lock, [&](){ return !enable_flag_.load();});
         }
     }
 
@@ -83,12 +89,15 @@ private:
     static void perClientThread(
         int listen_sock_fd,
         std::atomic<size_t>& client_num,
-        std::condition_variable& cv )
+        std::mutex& create_thread_mtx )
     {
-        client_num++;
+        ThreadSafeCout() << "client num: " << client_num.load() << std::endl;
+
         sockaddr_in peer_addr;
         socklen_t peer_addr_len = sizeof(peer_addr);
         int sock_fd = accept(listen_sock_fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
+        create_thread_mtx.unlock();
+        // cv.notify_one();
         if(sock_fd < 0)
         {
             perror("Accept error");
@@ -107,7 +116,7 @@ private:
             int len = recv(sock_fd, local_buffer.data(), local_buffer.size(), 0);
             if (len == 0)
             {
-                ThreadSafeCout() << "client disconnected" << std::endl;
+                ThreadSafeCout() << "client " << peer_addr.sin_port << " disconnected" << std::endl;
                 break;
             }
             if (len < 0)
@@ -141,7 +150,7 @@ private:
         }
         close(sock_fd);
         client_num--;
-        cv.notify_one();
+
     }
 
 private:
