@@ -101,7 +101,7 @@ inline void concurrentServerTest02()
 {
     trc::ThreadSafeCout() << "concurrentServerTest02()" << std::endl;
 
-    int server_port_number = 9096;
+    int server_port_number = 9092;
     trc::ConcurrentServer server(server_port_number);
     server.init();
     std::thread server_thread([&server](){
@@ -111,8 +111,8 @@ inline void concurrentServerTest02()
 #if 1
 
     std::vector<std::string> messages{"11", "22", "33", "44"};
-    std::vector<std::thread> threads;
-    for(size_t i = 0; i < 4; i++)
+    std::vector<std::thread> client_threads;
+    for(size_t i = 0; i < 3; i++)
     {
 
         // std::promise<std::vector<char>> prom_buff;
@@ -129,15 +129,15 @@ inline void concurrentServerTest02()
             trc::ThreadSafeCout() << "client thread exit" << std::endl;
         });
 
-        threads.push_back(std::move(client_thread));
+        client_threads.push_back(std::move(client_thread));
     }
-    for(auto & th: threads)
+    for(auto & th: client_threads)
     {
         th.join();
     }
 
 #endif
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     server.shutdown();
     trc::ThreadSafeCout() << "shutdown server" << std::endl;

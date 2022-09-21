@@ -46,19 +46,34 @@ public:
 
         while (enable_flag_.load())
         {
-            // std::unique_lock<std::mutex> lock(create_thread_mtx);
-            create_thread_mtx.lock();
-            if(client_num < MAX_CLIENT_NUM)
+            std::unique_lock<std::mutex> lock(create_thread_mtx);
+            spin_thread_cv_.wait(lock, [&](){return client_num.load() <= MAX_CLIENT_NUM || !enable_flag_.load();});
+
+            if(!enable_flag_.load()) break;
+
+            sockaddr_in peer_addr;
+            socklen_t peer_addr_len = sizeof(peer_addr);
+            int sock_fd = accept(listen_sock_fd_, (struct sockaddr*)&peer_addr, &peer_addr_len);
+            client_num++;
+
+            if(sock_fd < 0)
             {
-                client_num++;
-                std::thread th([&](){
-                    ConcurrentServer::perClientThread(
-                        listen_sock_fd_,
-                        client_num,
-                        create_thread_mtx);
-                });
-                th.detach();
+                if(!enable_flag_.load()) break;
+                perror("Accept error");
+                continue;
             }
+            ThreadSafeCout() << "client connected: "
+                << ipAddrToString(peer_addr.sin_addr.s_addr)  << ":" << peer_addr.sin_port
+                << ", fd: " << sock_fd
+                << std::endl;
+
+            std::thread th([sock_fd, &client_num, this](){
+                ConcurrentServer::perClientThread(
+                    sock_fd,
+                    client_num,
+                    this->spin_thread_cv_);
+            });
+            th.detach();
 
             // spin_thread_cv_.wait(lock, [&](){ return !enable_flag_.load();});
         }
@@ -87,27 +102,11 @@ public:
 private:
 
     static void perClientThread(
-        int listen_sock_fd,
+        int sock_fd,
         std::atomic<size_t>& client_num,
-        std::mutex& create_thread_mtx )
+        std::condition_variable& cv)
     {
-        ThreadSafeCout() << "client num: " << client_num.load() << std::endl;
-
-        sockaddr_in peer_addr;
-        socklen_t peer_addr_len = sizeof(peer_addr);
-        int sock_fd = accept(listen_sock_fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
-        create_thread_mtx.unlock();
-        // cv.notify_one();
-        if(sock_fd < 0)
-        {
-            perror("Accept error");
-            client_num--;
-            return;
-        }
-        ThreadSafeCout() << "client connected: "
-            << ipAddrToString(peer_addr.sin_addr.s_addr)  << ":" << peer_addr.sin_port
-            << std::endl;
-
+        ThreadSafeCout() << "client " << sock_fd <<  " thread created, client num: " << client_num.load() << std::endl;
         std::vector<char> local_buffer(1024);
         std::vector<char> process_buffer;
         std::queue<char> que;
@@ -116,7 +115,8 @@ private:
             int len = recv(sock_fd, local_buffer.data(), local_buffer.size(), 0);
             if (len == 0)
             {
-                ThreadSafeCout() << "client " << peer_addr.sin_port << " disconnected" << std::endl;
+                // ThreadSafeCout() << "client " << peer_addr.sin_port << " disconnected" << std::endl;
+                ThreadSafeCout() << "client " << sock_fd << " disconnected" << std::endl;
                 break;
             }
             if (len < 0)
@@ -137,6 +137,7 @@ private:
                 {
                     for(auto & c : process_buffer) c += 1;
                     int ret = send(sock_fd, process_buffer.data(), process_buffer.size(), 0);
+                    // ThreadSafeCout() << "send to client: " << sock_fd << std::endl;
                     if(ret < 1)
                     {
                         ThreadSafeCout() << "send error" << std::endl;
@@ -150,6 +151,7 @@ private:
         }
         close(sock_fd);
         client_num--;
+        cv.notify_one();
 
     }
 
