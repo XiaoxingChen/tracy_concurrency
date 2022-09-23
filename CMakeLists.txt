@@ -20,3 +20,5 @@ if(BUILD_TEST)
     add_subdirectory(tests)
 endif(BUILD_TEST)
 
+add_subdirectory(third_party)
+

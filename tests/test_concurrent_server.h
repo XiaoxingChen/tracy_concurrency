@@ -6,6 +6,7 @@
 #include "concurrent_server.h"
 #include "sequential_server.h"
 #include "naive_client.h"
+#include "logging.h"
 
 inline void naiveClientManualTest01()
 {
@@ -136,7 +137,8 @@ inline void concurrentServerTest02()
             client.shutdown();
 
             // prom_buff.set_value_at_thread_exit(client.resultBuffer());
-            trc::ThreadSafeCout() << "client thread exit" << std::endl;
+            // trc::ThreadSafeCout() << "client thread exit" << std::endl;
+            LOGI("client thread exit");
         });
 
         client_threads.push_back(std::move(client_thread));
@@ -166,7 +168,7 @@ inline void concurrentServerTest02()
 inline void concurrentServerFullTests()
 {
     concurrentServerTest01();
-    for(size_t i = 0; i < 20; i++)
+    for(size_t i = 0; i < 1; i++)
     {
         concurrentServerTest02();
     }
