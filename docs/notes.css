@@ -1,5 +1,5 @@
 @import url(./css/code_prettify_style.css);
-/* @import url(./css/dark_mode.css); */
+@import url(./dark_mode.css);
 code.md{
     background-color:#eee;
     color:deeppink;

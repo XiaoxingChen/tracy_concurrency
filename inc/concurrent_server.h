@@ -47,9 +47,10 @@ public:
         while (enable_flag_.load())
         {
             std::unique_lock<std::mutex> lock(create_thread_mtx);
-            spin_thread_cv_.wait(lock, [&](){return client_num.load() <= MAX_CLIENT_NUM || !enable_flag_.load();});
+            spin_thread_cv_.wait(lock, [&](){return client_num.load() < MAX_CLIENT_NUM || !enable_flag_.load();});
 
             if(!enable_flag_.load()) break;
+            if(client_num.load() >= MAX_CLIENT_NUM) continue;
 
             sockaddr_in peer_addr;
             socklen_t peer_addr_len = sizeof(peer_addr);

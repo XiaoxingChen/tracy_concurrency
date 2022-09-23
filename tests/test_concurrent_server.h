@@ -112,13 +112,23 @@ inline void concurrentServerTest02()
 
     std::vector<std::string> messages{"11", "22", "33", "44"};
     std::vector<std::thread> client_threads;
-    for(size_t i = 0; i < 3; i++)
+    std::condition_variable start_cv;
+    std::mutex start_mtx;
+    bool start_flag = false;
+    for(size_t i = 0; i < 5; i++)
     {
 
         // std::promise<std::vector<char>> prom_buff;
         // std::future<std::vector<char>> futu_buff = prom_buff.get_future();
 
-        std::thread client_thread([ server_port_number, messages](){
+        std::thread client_thread([ i, server_port_number, messages, &start_flag, &start_mtx, &start_cv](){
+
+            std::unique_lock<std::mutex> lock(start_mtx);
+            // trc::ThreadSafeCout() << "wait start" << std::endl;
+            start_cv.wait(lock, [&start_flag](){return start_flag;});
+            lock.unlock();
+            // trc::ThreadSafeCout() << "run: " << i << std::endl;
+
             trc::NaiveClient client(server_port_number);
             client.send(messages);
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -131,6 +141,15 @@ inline void concurrentServerTest02()
 
         client_threads.push_back(std::move(client_thread));
     }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+    {
+        std::unique_lock<std::mutex> lock(start_mtx);
+        start_flag = true;
+    }
+    start_cv.notify_all();
+
+    trc::ThreadSafeCout() << "notified" << std::endl;
     for(auto & th: client_threads)
     {
         th.join();
@@ -146,8 +165,12 @@ inline void concurrentServerTest02()
 
 inline void concurrentServerFullTests()
 {
-    // concurrentServerTest01();
-    concurrentServerTest02();
+    concurrentServerTest01();
+    for(size_t i = 0; i < 20; i++)
+    {
+        concurrentServerTest02();
+    }
+
     // sequentialServerManualTest01();
     // naiveClientManualTest01();
 }

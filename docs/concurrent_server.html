@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" type="text/css" href="notes.css" />
     <title>concurrent server</title>
 </head>
 <body>
@@ -18,6 +19,23 @@
     <h1>Debug Record</h1>
     <h2>Condition Variable Miss Notify</h2>
     <p>The conditional variable notified before the wait function was called.</p>
+
+    <h1>Logic of Conditional Variables</h1>
+    <ul>
+        <li><a href="https://en.cppreference.com/w/cpp/thread/condition_variable/wait"> wait() function of conditional variable </a></li>
+    </ul>
+    <p>
+        <code class="md">void wait( std::unique_lock<std::mutex>& lock )</code> is the core function.
+        The lock passed to <code class="md">wait()</code> should be locked by the current state.
+        It does three works:
+    </p>
+    <ol>
+        <li>Release the <code class="md">lock</code> </li>
+        <li>Block the thread and put it into a queue</li>
+        <li>Wake up the thread when signal comes and reaquire the <code class="md">lock</code></li>
+    </ol>
+
+
 
 
 </body>
